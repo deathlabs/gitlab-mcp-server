@@ -207,12 +207,10 @@ start-container: validate-workspace dependency-scan
 # Check the status of the container.
 # ---------------------------------------------------------
 
-
 .PHONY: status
 .SILENT: status
 status:
 	docker compose --profile $(DOCKER_COMPOSE_PROFILE) ps --format "table {{.Name}}\t{{.Ports}}\t{{.Status}}"
-
 
 # ---------------------------------------------------------
 # Test the container.

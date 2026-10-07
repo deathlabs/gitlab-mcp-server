@@ -29,6 +29,8 @@ jobs:
 
     env:
       GRYPE_FAILURE_THRESHOLD: ${{ github.event.inputs.sbom_scan_failure_threshold || 'medium' }}
+      # Health and tool discovery checks make no GitLab requests.
+      GITLAB_TOKEN: ci-test-token
 
     steps:
       - name: Clone Repository
@@ -88,7 +90,7 @@ jobs:
         run: echo "$(dirname '${{ steps.grype.outputs.cmd }}')" >> "$GITHUB_PATH"
 
       - name: Configure Environment
-        run: cp src/.env.example src/.env
+        run: cp .env.example .env
 
       - name: Run CI Pipeline
-        run: make tests
+        run: make test-container

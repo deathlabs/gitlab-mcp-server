@@ -115,6 +115,71 @@ class IssueTests(unittest.TestCase):
             self.run_tool(tools.update_issue, 1, 2)
         self.assertEqual(self.requests, [])
 
+    def test_fetch_issues_endpoints_and_pagination(self):
+        issues = [{"iid": 7}, {"iid": 9}]
+
+        def respond(request):
+            self.requests.append(request)
+            return httpx.Response(200, json=issues)
+
+        self.client = respond
+        self.assertEqual(self.run_tool(tools.fetch_issues, 42), issues)
+        self.assertEqual(
+            self.run_tool(
+                tools.fetch_issues, "group/subgroup/project", "closed", 2, 100
+            ),
+            issues,
+        )
+        self.assertEqual(self.requests[0].url.path, "/team/api/v4/projects/42/issues")
+        self.assertEqual(
+            dict(self.requests[0].url.params),
+            {"state": "all", "page": "1", "per_page": "20"},
+        )
+        self.assertEqual(
+            self.requests[1].url.raw_path.split(b"?")[0],
+            b"/team/api/v4/projects/group%2Fsubgroup%2Fproject/issues",
+        )
+        self.assertEqual(
+            dict(self.requests[1].url.params),
+            {"state": "closed", "page": "2", "per_page": "100"},
+        )
+        self.assertEqual(self.requests[1].headers["PRIVATE-TOKEN"], "secret-token")
+        self.assertEqual(self.requests[1].content, b"")
+
+    def test_fetch_issues_validation_before_http(self):
+        for kwargs in (
+            {"state": "invalid"},
+            {"page": 0},
+            {"page": True},
+            {"page": 1.5},
+            {"per_page": 0},
+            {"per_page": 101},
+            {"per_page": True},
+            {"per_page": "20"},
+        ):
+            with self.subTest(kwargs=kwargs), self.assertRaises(ValueError):
+                self.run_tool(tools.fetch_issues, 42, **kwargs)
+        with self.assertRaises(ValueError):
+            self.run_tool(tools.fetch_issues, "group/../project")
+        self.assertEqual(self.requests, [])
+
+    def test_fetch_issues_response_validation(self):
+        self.client = lambda request: httpx.Response(200, json=[])
+        self.assertEqual(self.run_tool(tools.fetch_issues, 42), [])
+        for response in ({"iid": 7}, ["secret-token"], [None], None):
+            self.client = lambda request, response=response: httpx.Response(
+                200, json=response
+            )
+            with (
+                self.subTest(response=response),
+                self.assertRaises((TypeError, RuntimeError)) as caught,
+            ):
+                self.run_tool(tools.fetch_issues, 42)
+            self.assertNotIn("secret-token", str(caught.exception))
+        self.client = lambda request: httpx.Response(200, text="secret-token")
+        with self.assertRaisesRegex(RuntimeError, "invalid JSON"):
+            self.run_tool(tools.fetch_issues, 42)
+
     def test_policy_blocks_before_http_and_action_cannot_be_spoofed(self):
         def unknown(project_id):
             return tools.fetch_issue(project_id, 1)
@@ -125,6 +190,10 @@ class IssueTests(unittest.TestCase):
         with self.assertRaises(GovernanceDenied):
             apply_policy(tools.delete_issue, denied_policy, "gitlab_mcp_server")(
                 project_id=1, issue_iid=2
+            )
+        with self.assertRaises(GovernanceDenied):
+            apply_policy(tools.fetch_issues, denied_policy, "gitlab_mcp_server")(
+                project_id=1
             )
         with self.assertRaises(TypeError):
             self.run_tool(tools.fetch_issue, 1, 2, action={"type": "delete_issue"})
@@ -139,6 +208,9 @@ class IssueTests(unittest.TestCase):
                 self.run_tool(tools.fetch_issue, 1, 2)
             self.assertIn(str(status), str(caught.exception))
             self.assertNotIn("secret-token", str(caught.exception))
+            with self.assertRaises(RuntimeError) as caught:
+                self.run_tool(tools.fetch_issues, 1)
+            self.assertNotIn("secret-token", str(caught.exception))
 
         def timeout(request):
             raise httpx.ReadTimeout("secret-token", request=request)
@@ -146,6 +218,8 @@ class IssueTests(unittest.TestCase):
         self.client = timeout
         with self.assertRaisesRegex(RuntimeError, "failed to reach"):
             self.run_tool(tools.fetch_issue, 1, 2)
+        with self.assertRaisesRegex(RuntimeError, "failed to reach"):
+            self.run_tool(tools.fetch_issues, 1)
 
     def test_configuration(self):
         with (
@@ -161,7 +235,7 @@ class IssueTests(unittest.TestCase):
 
 
 class DiscoveryTests(unittest.IsolatedAsyncioTestCase):
-    async def test_mcp_registers_four_tools_without_action_parameter(self):
+    async def test_mcp_registers_five_tools_without_action_parameter(self):
         server = FastMCP("test")
         for tool in TOOLS:
             server.add_tool(apply_policy(tool, get_policy(), "gitlab_mcp_server"))
@@ -169,10 +243,64 @@ class DiscoveryTests(unittest.IsolatedAsyncioTestCase):
             exposed = await client.list_tools()
         self.assertEqual(
             {tool.name for tool in exposed},
-            {"create_issue", "fetch_issue", "update_issue", "delete_issue"},
+            {
+                "create_issue",
+                "fetch_issue",
+                "fetch_issues",
+                "update_issue",
+                "delete_issue",
+            },
         )
         for tool in exposed:
             self.assertNotIn("action", tool.input_schema["properties"])
+
+    async def test_mcp_fetches_issues_with_defaults_and_explicit_pagination(self):
+        requests = []
+
+        def respond(request):
+            requests.append(request)
+            return httpx.Response(200, json=[{"iid": 7}, {"iid": 9}])
+
+        client_type = httpx.Client
+        server = FastMCP("test")
+        server.add_tool(
+            apply_policy(tools.fetch_issues, get_policy(), "gitlab_mcp_server")
+        )
+        with (
+            patch.dict(environ, {"GITLAB_TOKEN": "test-token"}),
+            patch.object(
+                tools.httpx,
+                "Client",
+                side_effect=lambda **options: client_type(
+                    transport=httpx.MockTransport(respond), **options
+                ),
+            ),
+        ):
+            async with Client(server, timeout=10) as client:
+                result = await client.call_tool("fetch_issues", {"project_id": 42})
+                self.assertEqual(result.data, [{"iid": 7}, {"iid": 9}])
+                await client.call_tool(
+                    "fetch_issues",
+                    {
+                        "project_id": "group/project",
+                        "state": "opened",
+                        "page": 3,
+                        "per_page": 50,
+                    },
+                )
+                with self.assertRaisesRegex(ToolError, "page must"):
+                    await client.call_tool(
+                        "fetch_issues", {"project_id": 42, "page": 0}
+                    )
+        self.assertEqual(len(requests), 2)
+        self.assertEqual(
+            dict(requests[0].url.params),
+            {"state": "all", "page": "1", "per_page": "20"},
+        )
+        self.assertEqual(
+            dict(requests[1].url.params),
+            {"state": "opened", "page": "3", "per_page": "50"},
+        )
 
     async def test_mcp_calls_issue_tool_and_denies_before_http(self):
         requests = []

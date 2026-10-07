@@ -58,9 +58,11 @@ def request_issue(
     project_id: str | int,
     issue_iid: int | None = None,
     fields: dict[str, Any] | None = None,
-) -> dict[str, Any]:
+    params: dict[str, str | int] | None = None,
+) -> dict[str, Any] | list[dict[str, Any]]:
     """Send a GitLab issue request without exposing credentials in errors."""
-    if method in ("GET", "PUT", "DELETE") and issue_iid is None:
+    listing = method == "GET" and issue_iid is None and params is not None
+    if method in ("GET", "PUT", "DELETE") and issue_iid is None and not listing:
         raise ValueError("issue_iid must be a positive project-scoped issue number.")
     validate_target(project_id, issue_iid)
     instance_url, token = get_configuration()
@@ -76,6 +78,7 @@ def request_issue(
                 endpoint,
                 headers={"PRIVATE-TOKEN": token},
                 json=fields,
+                params=params,
             )
             response.raise_for_status()
     except httpx.HTTPStatusError as error:
@@ -92,7 +95,12 @@ def request_issue(
         result = response.json()
     except ValueError:
         raise RuntimeError("GitLab returned an invalid JSON issue response.") from None
-    if not isinstance(result, dict):
+    if listing:
+        if not isinstance(result, list) or not all(
+            isinstance(issue, dict) for issue in result
+        ):
+            raise TypeError("GitLab returned an unexpected issues response.")
+    elif not isinstance(result, dict):
         raise TypeError("GitLab returned an unexpected issue response.")
     return result
 
@@ -120,6 +128,31 @@ def create_issue(
 def fetch_issue(project_id: str | int, issue_iid: int) -> dict[str, Any]:
     """Fetch an issue using its project-scoped IID, not its global issue ID."""
     return request_issue("GET", project_id, issue_iid)
+
+
+def fetch_issues(
+    project_id: str | int,
+    state: str = "all",
+    page: int = 1,
+    per_page: int = 20,
+) -> list[dict[str, Any]]:
+    """Fetch one page of project issues. State accepts all, opened, or closed.
+
+    Pages start at 1. Each page contains up to per_page issues (1 to 100).
+    """
+    if state not in ("all", "opened", "closed"):
+        raise ValueError("state must be all, opened, or closed.")
+    if isinstance(page, bool) or not isinstance(page, int) or page < 1:
+        raise ValueError("page must be a positive integer.")
+    if (
+        isinstance(per_page, bool)
+        or not isinstance(per_page, int)
+        or not 1 <= per_page <= 100
+    ):
+        raise ValueError("per_page must be an integer between 1 and 100.")
+    return request_issue(
+        "GET", project_id, params={"state": state, "page": page, "per_page": per_page}
+    )
 
 
 def update_issue(

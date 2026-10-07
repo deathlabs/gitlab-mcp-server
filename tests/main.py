@@ -28,7 +28,13 @@ async def main() -> None:
             await sleep(HEALTH_RETRY_DELAY)
 
     async with Client(URL) as client:
-        expected_tools = {"create_issue", "fetch_issue", "update_issue", "delete_issue"}
+        expected_tools = {
+            "create_issue",
+            "fetch_issue",
+            "fetch_issues",
+            "update_issue",
+            "delete_issue",
+        }
         exposed_tools = {tool.name for tool in await client.list_tools()}
         assert exposed_tools == expected_tools, f"Unexpected tools: {exposed_tools}"
         print(
