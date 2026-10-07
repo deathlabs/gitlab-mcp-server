@@ -1,0 +1,19 @@
+services:
+
+  gitlab_mcp_server:
+    profiles: [all]
+    build: mcp-server
+    image: gitlab_mcp_server/mcp:latest
+    container_name: gitlab_mcp_server_mcp
+    ports:
+      - "8003:8003"
+    environment:
+      FASTMCP_PORT: "8003"
+      GITLAB_URL: "${GITLAB_URL:-https://gitlab.com}"
+      GITLAB_TOKEN: "${GITLAB_TOKEN:-}"
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:8003/api/v1/health > /dev/null || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 2
+      start_period: 5s

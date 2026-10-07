@@ -1,0 +1,10 @@
+---
+apiVersion: governance.toolkit/v1
+name: gitlab-issue-policy
+agents: [gitlab_mcp_server]
+default_action: deny
+rules:
+  - name: allow-project-issue-crud
+    condition: "action.type in ['create_issue', 'fetch_issue', 'update_issue', 'delete_issue'] and project_id.value"
+    action: allow
+    description: "Allow the registered GitLab issue tools for a validated project target."

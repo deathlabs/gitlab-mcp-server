@@ -1,0 +1,7 @@
+[project]
+name = "gitlab_mcp_server-tests"
+version = "0.1.0"
+requires-python = ">=3.14"
+dependencies = [
+    "fastmcp"
+]
